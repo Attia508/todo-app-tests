@@ -21,7 +21,7 @@ class TodoAppTests(unittest.TestCase):
         
         cls.driver = webdriver.Chrome(options=chrome_options)
         cls.driver.implicitly_wait(10)
-        cls.base_url = "http://localhost:5000"
+        cls.base_url = "http://localhost:5001"
     
     @classmethod
     def tearDownClass(cls):
