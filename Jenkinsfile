@@ -55,7 +55,7 @@ pipeline {
                         docker rm ${CONTAINER_NAME} 2>/dev/null || true
                         
                         # Run the application container
-                        docker run -d --name ${CONTAINER_NAME} -p 5000:5000 ${DOCKER_IMAGE}:latest
+                        docker run -d --name ${CONTAINER_NAME} -p 5001:5001 ${DOCKER_IMAGE}:latest
                         
                         # Wait for application to be ready
                         echo "Waiting for application to start..."
@@ -66,7 +66,7 @@ pipeline {
                         
                         # Verify application is accessible
                         echo "Testing application endpoint..."
-                        curl -f http://localhost:5000 || (echo "Application failed to start" && exit 1)
+                        curl -f http://localhost:5001 || (echo "Application failed to start" && exit 1)
                         
                         echo "Application is running successfully!"
                     '''
