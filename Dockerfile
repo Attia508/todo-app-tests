@@ -11,6 +11,6 @@ COPY templates/ templates/
 
 RUN mkdir -p /app/instance
 
-EXPOSE 5000
+EXPOSE 5001
 
 CMD ["python", "app.py"]
