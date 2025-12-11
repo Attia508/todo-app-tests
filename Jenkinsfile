@@ -1,4 +1,4 @@
-pipeline {
+ppipeline {
     agent any
     
     environment {
@@ -79,44 +79,32 @@ pipeline {
                 script {
                     echo '========== Building Test Environment =========='
                     sh '''
-                        # Create Dockerfile for testing
+                        # Create a simpler Dockerfile using pre-built Selenium image
                         cat > Dockerfile.test <<'EOF'
-FROM python:3.9-slim
+FROM selenium/standalone-chrome:latest
 
-# Install dependencies for Chrome
+USER root
+
+# Install Python and pip
 RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    unzip \
-    curl \
-    ca-certificates \
-    --no-install-recommends \
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ChromeDriver
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1) && \
-    CHROME_DRIVER_VERSION=$(curl -sS "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_VERSION}") && \
-    wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_DRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip && \
-    unzip /tmp/chromedriver.zip -d /tmp/ && \
-    mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/ && \
-    chmod +x /usr/local/bin/chromedriver && \
-    rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64
-
-# Install Python packages
-RUN pip install --no-cache-dir selenium pytest pytest-html
+# Install Python test packages
+RUN pip3 install --break-system-packages selenium pytest pytest-html
 
 # Set working directory
 WORKDIR /tests
+
+# Switch back to selenium user
+USER seluser
 
 # Default command
 CMD ["pytest"]
 EOF
 
-                        # Build test image
+                        # Build test image (much faster with pre-built Chrome!)
                         docker build -t selenium-test:latest -f Dockerfile.test .
                         
                         echo "Test environment built successfully"
@@ -133,9 +121,10 @@ EOF
                         # Create test-results directory
                         mkdir -p test-results
                         
-                        # Run tests in Docker container
+                        # Run tests in Docker container with proper permissions
                         docker run --rm \
                             --network host \
+                            --user root \
                             -v "$(pwd)/tests:/tests" \
                             -v "$(pwd)/test-results:/test-results" \
                             selenium-test:latest \
