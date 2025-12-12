@@ -35,7 +35,9 @@ pipeline {
                 script {
                     echo '========== Building Application Docker Image =========='
                     sh '''
+                        # Build the application image
                         docker build -t ${DOCKER_IMAGE}:latest .
+                        
                         echo "Docker image built successfully"
                         docker images | grep ${DOCKER_IMAGE}
                     '''
@@ -48,55 +50,64 @@ pipeline {
                 script {
                     echo '========== Starting Application Container =========='
                     sh '''
+                        # Stop and remove existing container if running
                         docker stop ${CONTAINER_NAME} 2>/dev/null || true
                         docker rm ${CONTAINER_NAME} 2>/dev/null || true
+                        
+                        # Run the application container
                         docker run -d --name ${CONTAINER_NAME} -p 5001:5001 ${DOCKER_IMAGE}:latest
+                        
+                        # Wait for application to be ready
                         echo "Waiting for application to start..."
                         sleep 10
+                        
+                        # Check if application is running
                         docker ps | grep ${CONTAINER_NAME}
+                        
+                        # Verify application is accessible
                         echo "Testing application endpoint..."
                         curl -f http://localhost:5001 || (echo "Application failed to start" && exit 1)
+                        
                         echo "Application is running successfully!"
                     '''
                 }
             }
         }
         
-        stage('Install Test Dependencies') {
+        stage('Build Test Docker Image') {
             steps {
                 script {
-                    echo '========== Installing Chrome and Test Tools =========='
+                    echo '========== Building Test Environment =========='
                     sh '''
-                        # Install Chrome if not present
-                        if ! command -v google-chrome &> /dev/null; then
-                            echo "Installing Google Chrome..."
-                            wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-                            sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
-                            sudo apt-get update
-                            sudo apt-get install -y google-chrome-stable
-                        else
-                            echo "Chrome already installed"
-                        fi
+                        # Create a simpler Dockerfile using pre-built Selenium image
+                        cat > Dockerfile.test <<'EOF'
+FROM selenium/standalone-chrome:latest
+
+USER root
+
+# Install Python and pip
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python test packages
+RUN pip3 install --break-system-packages selenium pytest pytest-html
+
+# Set working directory
+WORKDIR /tests
+
+# Switch back to selenium user
+USER seluser
+
+# Default command
+CMD ["pytest"]
+EOF
+
+                        # Build test image (much faster with pre-built Chrome!)
+                        docker build -t selenium-test:latest -f Dockerfile.test .
                         
-                        # Install ChromeDriver if not present
-                        if ! command -v chromedriver &> /dev/null; then
-                            echo "Installing ChromeDriver..."
-                            CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
-                            wget -q "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}.0.6778.204/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip || \
-                            wget -q "https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip" -O /tmp/chromedriver.zip
-                            sudo unzip -o /tmp/chromedriver.zip -d /tmp/
-                            sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/ 2>/dev/null || sudo mv /tmp/chromedriver /usr/local/bin/
-                            sudo chmod +x /usr/local/bin/chromedriver
-                            rm -f /tmp/chromedriver.zip
-                        else
-                            echo "ChromeDriver already installed"
-                        fi
-                        
-                        # Install Python packages
-                        pip3 install --user selenium pytest pytest-html || \
-                        python3 -m pip install --user selenium pytest pytest-html
-                        
-                        echo "All dependencies installed!"
+                        echo "Test environment built successfully"
                     '''
                 }
             }
@@ -107,18 +118,22 @@ pipeline {
                 script {
                     echo '========== Running Selenium Tests =========='
                     sh '''
+                        # Create test-results directory
                         mkdir -p test-results
                         
-                        # Add Python user packages to PATH
-                        export PATH=$PATH:~/.local/bin
-                        
-                        # Run tests
-                        python3 -m pytest tests/test_todo_app.py \
-                            -v \
-                            --junitxml=test-results/results.xml \
-                            --html=test-results/report.html \
-                            --self-contained-html \
-                        || exit 1
+                        # Run tests in Docker container with proper permissions
+                        docker run --rm \
+                            --network host \
+                            --user root \
+                            -v "$(pwd)/tests:/tests" \
+                            -v "$(pwd)/test-results:/test-results" \
+                            selenium-test:latest \
+                            pytest /tests/test_todo_app.py \
+                                -v \
+                                --junitxml=/test-results/results.xml \
+                                --html=/test-results/report.html \
+                                --self-contained-html \
+                            || exit 1
                         
                         echo "All tests completed successfully!"
                     '''
@@ -132,13 +147,17 @@ pipeline {
             script {
                 echo '========== Cleaning Up =========='
                 sh '''
+                    # Stop and remove application container
                     docker stop ${CONTAINER_NAME} 2>/dev/null || true
                     docker rm ${CONTAINER_NAME} 2>/dev/null || true
+                    
                     echo "Cleanup completed"
                 '''
                 
+                // Publish test results
                 junit allowEmptyResults: true, testResults: 'test-results/results.xml'
                 
+                // Publish HTML report
                 publishHTML([
                     allowMissing: false,
                     alwaysLinkToLastBuild: true,
@@ -159,27 +178,52 @@ pipeline {
                         <html>
                         <body style="font-family: Arial, sans-serif;">
                             <h2 style="color: #4CAF50;">✓ Build Successful!</h2>
+                            
                             <table style="border-collapse: collapse; margin: 20px 0;">
-                                <tr><td style="padding: 8px; font-weight: bold;">Project:</td><td style="padding: 8px;">${env.JOB_NAME}</td></tr>
-                                <tr><td style="padding: 8px; font-weight: bold;">Build Number:</td><td style="padding: 8px;">#${env.BUILD_NUMBER}</td></tr>
-                                <tr><td style="padding: 8px; font-weight: bold;">Build Status:</td><td style="padding: 8px; color: #4CAF50; font-weight: bold;">SUCCESS</td></tr>
-                                <tr><td style="padding: 8px; font-weight: bold;">Duration:</td><td style="padding: 8px;">${currentBuild.durationString}</td></tr>
+                                <tr>
+                                    <td style="padding: 8px; font-weight: bold;">Project:</td>
+                                    <td style="padding: 8px;">${env.JOB_NAME}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px; font-weight: bold;">Build Number:</td>
+                                    <td style="padding: 8px;">#${env.BUILD_NUMBER}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px; font-weight: bold;">Build Status:</td>
+                                    <td style="padding: 8px; color: #4CAF50; font-weight: bold;">SUCCESS</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px; font-weight: bold;">Duration:</td>
+                                    <td style="padding: 8px;">${currentBuild.durationString}</td>
+                                </tr>
                             </table>
+                            
                             <h3>Links:</h3>
                             <ul>
                                 <li><a href="${env.BUILD_URL}">Build URL</a></li>
                                 <li><a href="${env.BUILD_URL}console">Console Output</a></li>
                                 <li><a href="${env.BUILD_URL}Selenium_20Test_20Report/">Test Report</a></li>
                             </ul>
+                            
                             <h3>Test Summary:</h3>
                             <p>All Selenium tests passed successfully!</p>
-                            <p style="margin-top: 20px; color: #666;"><strong>Triggered by:</strong> ${env.CHANGE_AUTHOR ?: 'Manual Build'}</p>
+                            
+                            <p style="margin-top: 20px; color: #666;">
+                                <strong>Triggered by:</strong> ${env.CHANGE_AUTHOR ?: 'Manual Build'}<br>
+                                <strong>Commit:</strong> ${env.GIT_COMMIT ?: 'N/A'}
+                            </p>
+                            
+                            <hr style="margin: 20px 0;">
+                            <p style="font-size: 12px; color: #999;">
+                                This is an automated message from Jenkins CI/CD Pipeline.
+                            </p>
                         </body>
                         </html>
                     """,
                     mimeType: 'text/html',
-                    to: "attiatulhayee508@gmail.com",
-                    from: 'jenkins@yourdomain.com'
+                    to: "${env.CHANGE_AUTHOR_EMAIL ?: env.BUILD_USER_EMAIL ?: 'attiatulhayee508@gmail.com'}",
+                    from: 'jenkins@yourdomain.com',
+                    replyTo: 'noreply@yourdomain.com'
                 )
             }
         }
@@ -193,23 +237,52 @@ pipeline {
                         <html>
                         <body style="font-family: Arial, sans-serif;">
                             <h2 style="color: #f44336;">✗ Build Failed!</h2>
+                            
                             <table style="border-collapse: collapse; margin: 20px 0;">
-                                <tr><td style="padding: 8px; font-weight: bold;">Project:</td><td style="padding: 8px;">${env.JOB_NAME}</td></tr>
-                                <tr><td style="padding: 8px; font-weight: bold;">Build Number:</td><td style="padding: 8px;">#${env.BUILD_NUMBER}</td></tr>
-                                <tr><td style="padding: 8px; font-weight: bold;">Build Status:</td><td style="padding: 8px; color: #f44336; font-weight: bold;">FAILURE</td></tr>
+                                <tr>
+                                    <td style="padding: 8px; font-weight: bold;">Project:</td>
+                                    <td style="padding: 8px;">${env.JOB_NAME}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px; font-weight: bold;">Build Number:</td>
+                                    <td style="padding: 8px;">#${env.BUILD_NUMBER}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px; font-weight: bold;">Build Status:</td>
+                                    <td style="padding: 8px; color: #f44336; font-weight: bold;">FAILURE</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 8px; font-weight: bold;">Duration:</td>
+                                    <td style="padding: 8px;">${currentBuild.durationString}</td>
+                                </tr>
                             </table>
+                            
                             <h3>Links:</h3>
                             <ul>
                                 <li><a href="${env.BUILD_URL}">Build URL</a></li>
-                                <li><a href="${env.BUILD_URL}console">Console Output</a></li>
+                                <li><a href="${env.BUILD_URL}console">Console Output (Check for errors)</a></li>
+                                <li><a href="${env.BUILD_URL}Selenium_20Test_20Report/">Test Report</a></li>
                             </ul>
-                            <p>Please check the console output for details.</p>
+                            
+                            <h3>Action Required:</h3>
+                            <p>Please check the console output and test report for details about the failure.</p>
+                            
+                            <p style="margin-top: 20px; color: #666;">
+                                <strong>Triggered by:</strong> ${env.CHANGE_AUTHOR ?: 'Manual Build'}<br>
+                                <strong>Commit:</strong> ${env.GIT_COMMIT ?: 'N/A'}
+                            </p>
+                            
+                            <hr style="margin: 20px 0;">
+                            <p style="font-size: 12px; color: #999;">
+                                This is an automated message from Jenkins CI/CD Pipeline.
+                            </p>
                         </body>
                         </html>
                     """,
                     mimeType: 'text/html',
-                    to: "attiatulhayee508@gmail.com",
-                    from: 'jenkins@yourdomain.com'
+                    to: "${env.CHANGE_AUTHOR_EMAIL ?: env.BUILD_USER_EMAIL ?: 'attiatulhayee508@gmail.com'}",
+                    from: 'jenkins@yourdomain.com',
+                    replyTo: 'noreply@yourdomain.com'
                 )
             }
         }
